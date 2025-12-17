@@ -1,0 +1,9 @@
+llama-index-core
+llama-parse
+llama-index-llms-google-genai
+llama-index-embeddings-google-genai
+streamlit
+pandas
+python-dotenv
+nest_asyncio
+google-genai
