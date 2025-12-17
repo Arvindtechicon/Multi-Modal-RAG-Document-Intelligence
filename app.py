@@ -2,10 +2,15 @@ import streamlit as st
 import os
 from dotenv import load_dotenv
 import nest_asyncio
-from llama_index.core import StorageContext, load_index_from_storage
+from llama_index.core import StorageContext, load_index_from_storage, Document
 from llama_index.core.settings import Settings
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.retrievers.bm25 import BM25Retriever
+from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.postprocessor import SentenceTransformerRerank
+from llama_index.core import QueryBundle
 
 # Apply nest_asyncio
 nest_asyncio.apply()
@@ -158,17 +163,64 @@ def load_query_engine():
         return None
     
     try:
+        # Load index
         storage_context = StorageContext.from_defaults(persist_dir=STORAGE_DIR)
         index = load_index_from_storage(storage_context)
-        return index.as_query_engine(similarity_top_k=5)
+        
+        # Get all documents for BM25
+        nodes = index.docstore.docs.values()
+        
+        # V2.0: CREATE HYBRID RETRIEVAL
+        # 1. Vector Retriever
+        vector_retriever = VectorIndexRetriever(
+            index=index,
+            similarity_top_k=10  # Increased for fusion
+        )
+        
+        # 2. BM25 Retriever (Keyword Search)
+        bm25_retriever = BM25Retriever.from_defaults(
+            nodes=list(nodes),
+            similarity_top_k=10
+        )
+        
+        # 3. Reciprocal Rank Fusion (RRF)
+        from llama_index.core.retrievers import QueryFusionRetriever
+        fusion_retriever = QueryFusionRetriever(
+            retrievers=[vector_retriever, bm25_retriever],
+            similarity_top_k=5,
+            num_queries=1,  # No query generation, just fusion
+            mode="reciprocal_rerank",
+            use_async=False
+        )
+        
+        # 4. Reranker (Cross-Encoder)
+        reranker = SentenceTransformerRerank(
+            model="cross-encoder/ms-marco-MiniLM-L-6-v2",
+            top_n=5
+        )
+        
+        # 5. Create Query Engine with Hybrid Search + Reranking
+        query_engine = RetrieverQueryEngine.from_args(
+            retriever=fusion_retriever,
+            node_postprocessors=[reranker],
+            response_mode="compact"
+        )
+        
+        return query_engine, index
+        
     except Exception as e:
         st.error(f"❌ Error loading index: {e}")
-        return None
+        return None, None
 
 # Sidebar
 with st.sidebar:
     st.markdown("### 🇶🇦 Qatar Economic Analyst")
     st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+    
+    # V2.0 Badge
+    st.info("🚀 **v2.0 Excellence Track**\n\n✅ Hybrid Search (Vector + BM25)\n\n✅ Cross-Encoder Reranking\n\n✅ Executive Briefing\n\n✅ Evaluation Dashboard")
+    
+    st.markdown("---")
     
     st.markdown("""
     **Multi-Modal Analysis Platform**
@@ -177,7 +229,8 @@ with st.sidebar:
     
     • **LlamaParse** - Advanced PDF parsing  
     • **Gemini 3 Flash** - AI-powered analysis  
-    • **Vector Search** - Semantic retrieval  
+    • **Hybrid Search** - Vector + Keyword (RRF)
+    • **Reranking** - Cross-encoder scoring
     • **Multi-Modal** - Text, tables & charts
     """)
     
@@ -200,8 +253,14 @@ with st.sidebar:
     
     st.markdown("---")
     
+    # V2.0: EXECUTIVE BRIEFING BUTTON
+    if st.button("📝 Generate Executive Briefing", use_container_width=True, type="primary"):
+        st.session_state.show_briefing = True
+        st.rerun()  # Force refresh to show briefing
+    
     if st.button("🗑️ Clear Chat History", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.show_briefing = False
         st.rerun()
     
     st.markdown("---")
@@ -209,17 +268,91 @@ with st.sidebar:
     st.markdown("""
     <div style='text-align: center; padding: 10px;'>
     <p style='font-size: 0.9em; margin: 0;'>Qatar Economic Intelligence</p>
-    <p style='font-size: 0.75em; opacity: 0.8; margin: 5px 0 0 0;'>Powered by AI</p>
+    <p style='font-size: 0.75em; opacity: 0.8; margin: 5px 0 0 0;'>Powered by AI • v2.0</p>
     </div>
     """, unsafe_allow_html=True)
 
 # Main Content
-st.markdown("<h1 class='main-header'>📊 Multi-Modal RAG: Qatar Economic Analyst</h1>", unsafe_allow_html=True)
-st.markdown("<p class='sub-header'>Powered by LlamaParse & Gemini 3 Flash Preview | Analyzes Text, Tables, and Charts</p>", unsafe_allow_html=True)
+st.markdown("<h1 class='main-header'>📊 Multi-Modal RAG: Qatar Economic Analyst v2.0</h1>", unsafe_allow_html=True)
+st.markdown("<p class='sub-header'>Excellence Track: Hybrid Search + Reranking + Executive Briefing</p>", unsafe_allow_html=True)
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
-# Load query engine
-query_engine = load_query_engine()
+# Load query engine and index
+result = load_query_engine()
+if result is not None:
+    query_engine, index = result
+else:
+    query_engine, index = None, None
+
+# V2.0: EXECUTIVE BRIEFING GENERATION
+def generate_executive_briefing(index):
+    """Generate structured executive briefing from document"""
+    if index is None:
+        return None
+    
+    try:
+        # Get first few document chunks
+        all_nodes = list(index.docstore.docs.values())
+        
+        # Create a summary query
+        briefing_prompt = """Based on the Qatar economic document, generate a comprehensive Executive Briefing with the following structure:
+
+**1. KEY ECONOMIC INDICATORS**
+Create a table with:
+- Indicator Name | Value | Change (%)
+
+**2. STRATEGIC RISKS**
+List top 3-5 risks with brief descriptions
+
+**3. POLICY RECOMMENDATIONS**
+Provide 3-5 actionable recommendations
+
+**4. OUTLOOK SUMMARY**
+One paragraph on future economic trajectory
+
+Be specific and cite page numbers when possible."""
+        
+        # Use the index to query
+        simple_engine = index.as_query_engine(similarity_top_k=10)
+        response = simple_engine.query(briefing_prompt)
+        
+        return response.response
+    except Exception as e:
+        return f"Error generating briefing: {e}"
+
+# Initialize session states early
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "show_briefing" not in st.session_state:
+    st.session_state.show_briefing = False
+
+# Show Executive Briefing if requested
+if st.session_state.show_briefing:
+    if index is not None:
+        with st.expander("📋 **Executive Briefing - Qatar Economic Analysis**", expanded=True):
+            with st.spinner("🔄 Generating comprehensive briefing..."):
+                try:
+                    briefing = generate_executive_briefing(index)
+                    if briefing and "Error" not in briefing:
+                        st.markdown(briefing)
+                        st.success("✅ Briefing generated successfully!")
+                        
+                        # Download button
+                        st.download_button(
+                            label="⬇️ Download Briefing",
+                            data=briefing,
+                            file_name="qatar_economic_briefing.md",
+                            mime="text/markdown"
+                        )
+                    else:
+                        st.error(f"❌ Failed to generate briefing: {briefing}")
+                        st.info("💡 **Troubleshooting:**\n- Check if documents are loaded\n- Try running `python ingest.py` again\n- Check console for errors")
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+                    st.info("Please check that the index is properly loaded.")
+    else:
+        st.warning("⚠️ Index not loaded. Please run `python ingest.py` first.")
+        st.session_state.show_briefing = False
 
 # Initialize Chat History
 if "messages" not in st.session_state:

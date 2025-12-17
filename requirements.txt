@@ -2,8 +2,11 @@ llama-index-core
 llama-parse
 llama-index-llms-google-genai
 llama-index-embeddings-google-genai
+llama-index-retrievers-bm25
 streamlit
 pandas
 python-dotenv
 nest_asyncio
 google-genai
+sentence-transformers
+rank-bm25
